@@ -153,7 +153,6 @@ class IGC_path(object):
         plt.hist(self.velocity_smooth, bins=marks)
         plt.show()
 
-
         # Figure 3 - sustained climb/sink
         plt.title("vario: maximum sustained climb/sink")
         plt.ylabel("rate   (ft / min)")

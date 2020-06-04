@@ -13,7 +13,9 @@ Gain some insights, learn stuff, and be amazed.
 You may need to install some libs...
 
 `sudo apt install python3` (if for some reason you don't have python3)
+
 `sudo apt install pip3` (if you don't already have pip for python3)
+
 `pip3 install matplot numpy`
 
 
