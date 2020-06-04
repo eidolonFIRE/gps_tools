@@ -4,7 +4,8 @@ Do some snazzy processing on your .igc gps logs!
 Gain some insights, learn stuff, and be amazed.
 
 ![figure1](sample_images/alt_vel.png)
-![figure2](sample_images/vario_hist.png)
+![figure2](sample_images/speed_hist.png)
+![figure3](sample_images/vario_hist.png)
 
 
 # Setup
