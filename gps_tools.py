@@ -58,7 +58,16 @@ class IGC_path(object):
         i = 0
         while i < len(path) - 1:
             while path[i][0] == path[i+1][0]:
+                print("Sample removed - Identical timestamp: idx({})".format(i))
                 path[i] = list((numpy.array(path[i]) + numpy.array(path[i+1])) / 2.0)
+                del path[i+1]
+            i += 1
+
+        # detect samples saved out of order. (time running backwards)
+        i = 0
+        while i < len(path) - 1:
+            while path[i][0] > path[i+1][0] and path[i][0] - path[i+1][0] < 60:
+                print("Sample removed - Time ran backwards {}s at idx({})".format(path[i][0] - path[i+1][0], i + 1))
                 del path[i+1]
             i += 1
 
