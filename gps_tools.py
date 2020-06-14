@@ -52,7 +52,7 @@ class IGC_path(object):
                 # latitude
                 (float(args[3][:2]) + float(args[3][2:]) / 60000),
                 # altitude
-                float(args[8]) * 3.28084])
+                (float(args[9]) * 3.28084 if args[9]is not 0 else float(args[8]) * 3.28084)])
 
         # merge points with same timestamp (rolling avg.)
         i = 0
@@ -83,7 +83,13 @@ class IGC_path(object):
         print("        avg. latitude: {:.2f} deg".format(mean_lat))
         long_scale = 2.09246e7 * math.pi / 180 * math.cos(mean_lat * 0.01745329)
         lat_scale = 364173.2
-        path -= path[0]
+
+        # if record didn't start on the ground, use min altitude
+        if path[0, 3] > 100:
+            print("Record doesn't begin on the ground. Adding offset.")
+            path -= [path[0, 0], path[0, 1], path[0, 2], numpy.min(path[:, 3])]
+        else:
+            path -= path[0]
         path *= [1.0, long_scale, lat_scale, 1.0]
 
         return path
