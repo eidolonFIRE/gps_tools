@@ -6,6 +6,7 @@ Gain some insights, learn stuff, and be amazed.
 ![figure1](sample_images/alt_vel.png)
 ![figure2](sample_images/speed_hist.png)
 ![figure3](sample_images/vario_hist.png)
+![figure4](sample_images/repaired_alti.png)
 
 
 # Setup

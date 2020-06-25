@@ -139,7 +139,7 @@ class IGC_path(object):
 
         fig, ax1 = plt.subplots()
 
-        # Figure 1 - speed and altitude
+        # ==== Figure 1 - speed and altitude
         color = 'tab:red'
         ax1.set_xlabel('time (s)')
         ax1.set_ylabel('speed (mph)', color=color)
@@ -152,13 +152,15 @@ class IGC_path(object):
         color = 'tab:blue'
         ax2.set_ylabel('alti. (ft)', color=color)  # we already handled the x-label with ax1
         ax2.grid(b=True, which='major', color="lightskyblue", linestyle='-')
+        if hasattr(self, "original_alti"):
+            ax2.plot(self.path[:, 0], self.original_alti, color="lightskyblue")
         ax2.plot(self.path[:, 0], self.path[:, 3], color=color)
         ax2.tick_params(axis='y', labelcolor=color)
         ax2.set_yticks(numpy.arange(round(min(self.path[:, 3]) / 100) * 100, round(max(self.path[:, 3]) / 100) * 100, 100))
         fig.tight_layout()  # otherwise the right y-label is slightly clipped
         plt.show()
 
-        # Figure 2 - speed histogram
+        # ==== Figure 2 - speed histogram
         plt.title("speed histogram")
         plt.ylabel("")
         plt.xlabel("speed (mph)")
@@ -168,14 +170,21 @@ class IGC_path(object):
         plt.hist(self.velocity_smooth, bins=marks)
         plt.show()
 
-        # Figure 3 - sustained climb/sink
+        # ==== Figure 3 - sustained climb/sink
         plt.title("vario: maximum sustained climb/sink")
         plt.ylabel("rate   (ft / min)")
         plt.xlabel("duration (s)")
         res = math.ceil(self.stats["avg sample rate"])
         plt.xticks(numpy.arange(0, max(self.max_vario_hist.keys()) + res, res))
+        plt.yticks(numpy.arange(min(self.min_vario_hist.values())/100*100 - 100, max(self.max_vario_hist.values()) + 100, 100))
         plt.bar(self.max_vario_hist.keys(), self.max_vario_hist.values(), width=self.stats["avg sample rate"] - 0.1)
         plt.bar(self.min_vario_hist.keys(), self.min_vario_hist.values(), width=self.stats["avg sample rate"] - 0.1)
+        plt.show()
+
+        # ==== Figure 4 - 3D path
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        ax.plot(self.path[:, 1], self.path[:, 2], self.path[:, 3])
         plt.show()
 
     def _smooth_recur(self, data, window_len=7):
@@ -193,6 +202,41 @@ class IGC_path(object):
         self.path = self._smooth_recur(self.path, math.ceil(factor / self.stats["avg sample rate"]))
         self.calc_stats()
 
+    def fix_missing_alti(self):
+        """ Scan for segments when gps failed to record correct elevation
+            and instead saved a flat line. Fill in gap with linear interpolated
+            sweep from the start/end of the gap.
+        """
+        self.original_alti = self.path[:, 3] * 1.0
+        delta = self.path[1:] - self.path[:-1]
+        rate = delta[:, 3] / delta[:, 0] * 60
+
+        # i: main scan index
+        # t: end point of inner scan
+        i = 0
+        while i < len(rate) - 1:
+            if (rate[i] - rate[i+1]) / delta[i, 0] < -40 or i == 0:
+                # unatural decent detected, begin inner scan
+                t = i + 1
+                while t < len(rate) - 1 and abs(delta[t, 3]) < 4:
+                    t += 1
+
+                # patch must be at least 3 samples
+                if (t - i) > 3:
+                    # patch area of flat elevation
+                    start = self.path[max(i-1, 0), 3]
+                    end = self.path[min(t+1, len(self.path)), 3]
+                    print("Repairing elev: i({} .. {}) {:.1f}ft -> {:.1f}ft".format(i, t, start, end))
+
+                    segment_len = t - i
+                    patch = numpy.arange(0.0, 1.0 + 1.0 / (segment_len+1), 1.0 / segment_len) * (end - start) + start
+                    self.path[i:t+1, 3] = patch
+
+                    # skip ahead
+                    i = t - 1
+            i += 1
+        self.calc_stats()
+
 
 # ==============================================================================
 
@@ -206,11 +250,15 @@ if __name__ == "__main__":
                         help='show graphs')
     parser.add_argument('-s', metavar='amount', dest='smooth', nargs=1, type=int,
                         help='path smoothing factor (recommend 20)')
+    parser.add_argument('-f', dest='fix_alti', action='store_true', default=False)
     args = parser.parse_args()
 
     # DO THINGS
     for each in args.input_files:
         path = IGC_path([each])
+
+        if args.fix_alti:
+            path.fix_missing_alti()
 
         if args.smooth:
             path.smooth(min(100, max(1, args.smooth[0])))
