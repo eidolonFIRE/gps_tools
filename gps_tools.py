@@ -7,6 +7,21 @@ import numpy
 import argparse
 
 
+def color_wheel(pos, bri=1.0):
+    """ Select color from rainbow
+    """
+    pos = pos % 1.0
+    if pos < 0.333333:
+        retval = numpy.array((pos * 3.0 * bri, (1.0 - pos * 3.0) * bri, 0.0))
+    elif pos < 0.666667:
+        pos -= 0.333333
+        retval = numpy.array(((1.0 - pos * 3.0) * bri, 0.0, pos * 3.0 * bri))
+    else:
+        pos -= 0.666667
+        retval = numpy.array((0.0, pos * 3.0 * bri, (1.0 - pos * 3.0) * bri))
+    return numpy.clip(numpy.array(retval * 255, dtype=int), 0, 255)
+
+
 class IGC_path(object):
     def __init__(self, input_files):
         self.path = []
@@ -18,7 +33,7 @@ class IGC_path(object):
     def __str__(self):
         text = """
         avg. GPS sample rate = {sr:.1f} sec/sample
-        log duration = {dura:.1f} min
+        log duration = {dura:.1f} min, {dist:.1f} mi
         avg. speed = {aspd:.2f} mph
         min alti. = {mina:.0f} ft
         max alti. = {maxa:.0f} ft
@@ -27,6 +42,7 @@ class IGC_path(object):
         return text.format(
             sr=self.stats["avg sample rate"],
             dura=self.stats["duration"],
+            dist=self.stats["dist"],
             aspd=self.stats["avg speed"],
             mina=self.stats["min alti"],
             maxa=self.stats["max alti"])
@@ -87,10 +103,13 @@ class IGC_path(object):
         # if record didn't start on the ground, use min altitude
         if path[0, 3] > 100:
             print("Record doesn't begin on the ground. Adding offset.")
-            path -= [path[0, 0], path[0, 1], path[0, 2], numpy.min(path[:, 3])]
+            self._path_offset = [-path[0, 0], -path[0, 1], -path[0, 2], -numpy.min(path[:, 3])]
+            path += self._path_offset
         else:
-            path -= path[0]
-        path *= [1.0, long_scale, lat_scale, 1.0]
+            self._path_offset = -path[0]
+            path += self._path_offset
+        self._path_scale = [1.0, long_scale, lat_scale, 1.0]
+        path *= self._path_scale
 
         return path
 
@@ -116,6 +135,8 @@ class IGC_path(object):
 
         self.stats["min alti"] = numpy.min(path[:, 3])
         self.stats["max alti"] = numpy.max(path[:, 3])
+
+        self.stats["dist"] = sum(numpy.linalg.norm(self._smooth_recur(delta[:, 1:], math.ceil(20 / self.stats["avg sample rate"])), axis=1)) / 5280
 
         self.velocity = numpy.linalg.norm(delta[:, 1:], axis=1) / delta[:, 0] * 3600 / 5280
         self.velocity_smooth = self._smooth_recur(self.velocity, math.ceil(100 / self.stats["avg sample rate"]))
@@ -237,6 +258,58 @@ class IGC_path(object):
             i += 1
         self.calc_stats()
 
+    def export_kml(self, filename):
+        style_format = """<Style id="{name}">
+<LineStyle>
+<color>{line_color}</color>
+<width>4</width>
+</LineStyle>
+<PolyStyle>
+<color>{poly_color}</color>
+<outline>0</outline>
+</PolyStyle>
+</Style>"""
+        linestring_format = """<Placemark>
+<name>
+{name}
+</name>
+<styleUrl>#{style}</styleUrl>
+<LineString>
+<extrude>1</extrude>
+<tessellate>1</tessellate>
+<altitudeMode>absolute</altitudeMode>
+<coordinates>
+{coordinates}
+</coordinates>
+</LineString>
+</Placemark>"""
+        file_format = """<?xml version="1.0"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+{styles}
+{linestring}
+</Document>
+</kml>"""
+
+        num_styles = 32
+        path_unprojected = (self.path / self._path_scale - self._path_offset) / [1.0, 1.0, 1.0, 3.28084]
+        styles = []
+        for i in range(num_styles):
+            line_color = "ff{:02x}{:02x}{:02x}".format(*color_wheel(-i/(float(num_styles)-1)*2/3 + 1/3))
+            styles.append(style_format.format(name="style{}".format(i), line_color=line_color, poly_color="7f0f0f0f"))
+
+        linestrings = []
+
+        step = 10
+        vel_range = [15, 35]
+        for i in range(0, len(self.path), step):
+            points_string = "\n".join(["{},{},{}".format(*x[1:]) for x in path_unprojected[i:min(len(path_unprojected - 1), i + step + 1)]])
+            avg_speed = numpy.mean(self.velocity[max(0, i-1):min(len(self.velocity - 1), i + step + 1)])
+            style = "style{}".format(max(0, min(num_styles - 1, int(num_styles * (avg_speed - vel_range[0]) / (vel_range[1] - vel_range[0])))))
+            linestrings.append(linestring_format.format(name=str(i), style=style, coordinates=points_string))
+
+        with open(filename, 'w') as file:
+            file.write(file_format.format(name=filename, styles="\n".join(styles), linestring="\n".join(linestrings)))
 
 # ==============================================================================
 
@@ -244,17 +317,20 @@ class IGC_path(object):
 if __name__ == "__main__":
     # parse args
     parser = argparse.ArgumentParser(description='GPS log insights!')
-    parser.add_argument('input_files', nargs='+',
-                        help='comma separated input .IGC files')
+    parser.add_argument('input', nargs='+',
+                        help='IGC files to process')
     parser.add_argument('-g', dest='show_graph', action='store_true', default=False,
                         help='show graphs')
     parser.add_argument('-s', metavar='amount', dest='smooth', nargs=1, type=int,
                         help='path smoothing factor (recommend 20)')
-    parser.add_argument('-f', dest='fix_alti', action='store_true', default=False)
+    parser.add_argument('-f', dest='fix_alti', action='store_true', default=False,
+                        help='fix altimeter errors')
+    parser.add_argument('-k', metavar='filename', dest='kml', nargs=1,
+                        help='render to kml file')
     args = parser.parse_args()
 
     # DO THINGS
-    for each in args.input_files:
+    for each in args.input:
         path = IGC_path([each])
 
         if args.fix_alti:
@@ -267,3 +343,7 @@ if __name__ == "__main__":
 
         if args.show_graph:
             path.plots()
+
+        if args.kml:
+            print("Exporting kml to: \"{}\"".format(args.kml[0]))
+            path.export_kml(args.kml[0])
