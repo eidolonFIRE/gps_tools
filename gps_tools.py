@@ -22,7 +22,7 @@ def color_wheel(pos, bri=1.0):
     return numpy.clip(numpy.array(retval * 255, dtype=int), 0, 255)
 
 
-class IGC_path(object):
+class GpsPath(object):
     def __init__(self, input_files):
         self.path = []
         self.stats = {}
@@ -47,7 +47,7 @@ class IGC_path(object):
             mina=self.stats["min alti"],
             maxa=self.stats["max alti"])
 
-    def _parse(self, lines):
+    def _parseIGC(self, lines):
         # B HH MM SS DD MMmmm N DDD MMmmm E V PPPPP GGGGG CR LF
         # Description Size    Element    Remarks
         # Time        6 bytes HHMMSS     Valid characters 0-9
@@ -68,7 +68,7 @@ class IGC_path(object):
                 # latitude
                 (float(args[3][:2]) + float(args[3][2:]) / 60000),
                 # altitude
-                (float(args[9]) * 3.28084 if args[9]is not 0 else float(args[8]) * 3.28084)])
+                (float(args[9]) * 3.28084 if args[9] != 0 else float(args[8]) * 3.28084)])
 
         # merge points with same timestamp (rolling avg.)
         i = 0
@@ -110,13 +110,50 @@ class IGC_path(object):
             path += self._path_offset
         self._path_scale = [1.0, long_scale, lat_scale, 1.0]
         path *= self._path_scale
+        return path
 
+    def _parseKML(self, lines):
+        path = []
+        i = 0
+        skipCount = 0
+        for coord in re.findall("([\d\.\-]+),([\d\.\-]+),([\d\.\-]+)", lines):
+            print(coord)
+            _new = [i, float(coord[0]), float(coord[1]), float(coord[2]) * 3.28084]
+            if len(path) == 0 or _new[1] != path[-1][1] or _new[2] != path[-1][2] or _new[3] != path[-1][3]:
+                path.append(_new)
+                i += 5
+            else:
+                skipCount += 1
+        path = numpy.array(path)
+        # print(path)
+        print(f"Skipped {skipCount} samples.")
+
+        # convert to flat projection (estimated) and center
+        mean_lat = numpy.mean(path[:, 2])
+        print("        avg. latitude: {:.2f} deg".format(mean_lat))
+        long_scale = 2.09246e7 * math.pi / 180 * math.cos(mean_lat * 0.01745329)
+        lat_scale = 364173.2
+
+        # if record didn't start on the ground, use min altitude
+        if path[0, 3] > 100:
+            print("Record doesn't begin on the ground. Adding offset.")
+            self._path_offset = [-path[0, 0], -path[0, 1], -path[0, 2], -numpy.min(path[:, 3])]
+            path += self._path_offset
+        else:
+            self._path_offset = -path[0]
+            path += self._path_offset
+        self._path_scale = [1.0, long_scale, lat_scale, 1.0]
+        path *= self._path_scale
+        
         return path
 
     def append(self, filename):
         with open(filename, "r") as file:
             print("\n+++ Parsing: " + filename)
-            data = self._parse(file.read())
+            if filename.lower().endswith(".igc"):
+                data = self._parseIGC(file.read())
+            elif filename.lower().endswith(".kml"):
+                data = self._parseKML(file.read())
         if len(self.path):
             self.path = numpy.append(self.path, data)
         else:
@@ -236,14 +273,16 @@ class IGC_path(object):
         # t: end point of inner scan
         i = 0
         while i < len(rate) - 1:
-            if (rate[i] - rate[i+1]) / delta[i, 0] < -40 or i == 0:
+            if (rate[i] - rate[i+1]) / delta[i, 0] < -500 or i == 0:
                 # unatural decent detected, begin inner scan
                 t = i + 1
-                while t < len(rate) - 1 and abs(delta[t, 3]) < 4:
+                _leftValue = self.path[i, 3]
+                _rightValue = self.path[t, 3]
+                while t < len(rate) - 1 and ((abs(delta[t, 3]) < 4) or (self.path[t, 3] < (_leftValue * 0.2 + _rightValue * 0.8))):
                     t += 1
 
-                # patch must be at least 3 samples
-                if (t - i) > 3:
+                # patch must be at least # samples
+                if (t - i) > 2:
                     # patch area of flat elevation
                     start = self.path[max(i-1, 0), 3]
                     end = self.path[min(t+1, len(self.path)), 3]
@@ -331,10 +370,11 @@ if __name__ == "__main__":
 
     # DO THINGS
     for each in args.input:
-        path = IGC_path([each])
+        path = GpsPath([each])
 
         if args.fix_alti:
             path.fix_missing_alti()
+            # path.fix_missing_alti()
 
         if args.smooth:
             path.smooth(min(100, max(1, args.smooth[0])))
